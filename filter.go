@@ -52,17 +52,27 @@ func fileFilter() {
 	}
 }
 
+var rwFileMapLock sync.RWMutex
 var fileLocks = make(map[string]*sync.Mutex)
 
-func dealWithFileEvent(filePath string) {
-	// 检查锁
+func getFileLock(filePath string) *sync.Mutex {
+	rwFileMapLock.RLock()
 	lock, ok := fileLocks[filePath]
+	rwFileMapLock.RUnlock()
+
 	if !ok {
 		lock = &sync.Mutex{}
+		rwFileMapLock.Lock()
 		fileLocks[filePath] = lock
+		rwFileMapLock.Unlock()
 	}
+	return lock
+}
 
-	ok = lock.TryLock()
+func dealWithFileEvent(filePath string) {
+	// 检查文件锁
+	lock := getFileLock(filePath)
+	ok := lock.TryLock()
 	if !ok {
 		plog.Println("跳过事件：", filePath)
 		return
