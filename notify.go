@@ -39,11 +39,11 @@ func run(dirPaths []string) {
 	}
 	defer watcher.Close()
 
+	refreshWatchedPaths(watcher, dirPaths) //持续添加目录
+
 	go fileFilter() //启动过滤器
 
 	go eventHandler(watcher) //注册观察回调
-
-	go refreshWatchedPaths(watcher, dirPaths) //持续添加目录
 
 	<-stopCh // 这里会阻塞，直到接收到来自GracefulStop的信号
 	plog.Println("主协程退出")
@@ -95,7 +95,13 @@ func traverseDir(watchedPaths map[string]bool, dirPath string) {
 	}
 }
 
+var addLocker sync.Mutex
+
 func addWatchedPaths(watcher *fsnotify.Watcher, dirPath string) {
+
+	addLocker.Lock()
+	defer addLocker.Unlock()
+
 	plog.Println("添加观察目录：", dirPath)
 	err := watcher.Add(dirPath) //添加观察目录
 	if err != nil {
