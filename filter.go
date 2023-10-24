@@ -3,6 +3,7 @@ package rxfsnotify
 import (
 	"github.com/atmshang/plog"
 	"github.com/reactivex/rxgo/v2"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -98,6 +99,7 @@ func callback(filePath string, exist bool) {
 		defer func() {
 			if r := recover(); r != nil {
 				plog.Println("callback recover:", r)
+				debug.PrintStack()
 			}
 		}()
 		cb.OnPathChanged(cbe)
