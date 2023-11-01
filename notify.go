@@ -121,8 +121,8 @@ func eventHandler(watcher *fsnotify.Watcher) {
 			// 持续添加新的被观察目录
 			if event.Op == fsnotify.Create {
 				if stat, err := os.Stat(filePath); err == nil && stat.IsDir() {
-					// 补充添加新的子目录
-					addWatchedPaths(watcher, filePath)
+					// 递归补充添加新的子目录
+					refreshWatchedPaths(watcher, []string{filePath})
 				}
 			}
 
