@@ -2,11 +2,15 @@ package rxfsnotify
 
 import (
 	"github.com/atmshang/plog"
+	"github.com/atmshang/rxfsnotify/concurrent"
 	"github.com/fsnotify/fsnotify"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
+	"time"
 )
 
 var stopCh = make(chan bool)
@@ -14,9 +18,11 @@ var wg sync.WaitGroup
 
 func Start(dirPaths []string) {
 	tryCloseCh()
+	refreshTaskQueue.Start()
 	stopCh = make(chan bool)
 	wg.Add(1)
 	run(dirPaths)
+	refreshTaskQueue.CancelAll()
 }
 
 func GracefulStop() {
@@ -102,11 +108,60 @@ func addWatchedPaths(watcher *fsnotify.Watcher, dirPath string) {
 	addLocker.Lock()
 	defer addLocker.Unlock()
 
-	plog.Println("添加观察目录：", dirPath)
-	err := watcher.Add(dirPath) //添加观察目录
+	err := watcher.Remove(dirPath)
 	if err != nil {
-		// 忽略这个情况即可
+		log.Println("[REMOVE4ADD] 移除观察失败：", err, dirPath)
+	} else {
+		log.Println("[REMOVE4ADD] 移除观察成功：", dirPath)
 	}
+
+	err = watcher.Add(dirPath) //添加观察目录
+	if err != nil {
+		log.Println("[ADD] 添加观察目录失败：", err, dirPath)
+		return
+	}
+	log.Println("[ADD] 添加观察目录成功：", dirPath)
+}
+
+// fsnotify的文档有说，会自动移除不存在的监听，先不管他，但是rename的情况有bug，难顶
+func removeWatch(watcher *fsnotify.Watcher, event fsnotify.Event) {
+	addLocker.Lock()
+	defer addLocker.Unlock()
+
+	err := watcher.Remove(event.Name)
+	if err != nil {
+		log.Println("[REMOVE] 移除观察失败：", err, event.Name)
+		return
+	}
+	log.Println("[REMOVE] 移除观察成功：", event.Name)
+}
+
+var waitingRefreshDirMap = concurrent.NewSafeMap()
+
+var refreshTaskQueue = concurrent.NewTaskQueue()
+
+func innerNotify(event fsnotify.Event) {
+	_event := fileEvent{Path: event.Name, Event: event.Op.String()}
+	sendFileEvent(_event)
+
+}
+
+func innerProcessDir(watcher *fsnotify.Watcher, event fsnotify.Event) {
+	// 标记变更
+	waitingRefreshDirMap.Set(event.Name, true)
+	// 取消等待的任务
+	refreshTaskQueue.CancelAll()
+	// 发布新任务到未来
+	_ = refreshTaskQueue.AddTask(5000*time.Millisecond, func() {
+		dirPaths := waitingRefreshDirMap.ToList()
+		for _, dirPath := range dirPaths {
+			_event := fileEvent{Path: dirPath, Event: fsnotify.Create.String()}
+			plog.Println("批量发送文件夹新建的事件:", _event)
+			sendFileEvent(_event)
+		}
+		refreshWatchedPaths(watcher, dirPaths)
+	})
+
 }
 
 func eventHandler(watcher *fsnotify.Watcher) {
@@ -114,34 +169,54 @@ func eventHandler(watcher *fsnotify.Watcher) {
 		select {
 		case event, ok := <-watcher.Events:
 			if !ok {
+				plog.Println("监听事件管道发现：不OK")
 				continue
 			}
-			filePath := event.Name
-
-			// 持续添加新的被观察目录
-			if event.Op == fsnotify.Create {
-				if stat, err := os.Stat(filePath); err == nil && stat.IsDir() {
-					// 递归补充添加新的子目录
-					refreshWatchedPaths(watcher, []string{filePath})
-				}
+			// 判断状态
+			stat, err := os.Stat(event.Name)
+			if err != nil {
+				plog.Println("这个文件不在啦：", event)
+				removeWatch(watcher, event)
+				innerNotify(event)
+				continue
+			} else {
+				plog.Println("这个文件还在：", event)
 			}
-
-			//其他监听流程
-
-			op := event.Op.String()
-
-			_event := fileEvent{Path: filePath, Event: op}
-			plog.Println("发送事件:", _event)
-			sendFileEvent(_event)
-
+			if stat.IsDir() {
+				switch event.Op {
+				case fsnotify.Create:
+					plog.Println("这个文件是个新建的文件夹：", event)
+					innerProcessDir(watcher, event)
+					continue
+				case fsnotify.Write:
+					plog.Println("这个文件是个有内容变化的文件夹：", event)
+				case fsnotify.Remove:
+					// remove分为要remove和已经remove两次，要remove这回事，我们不管，这里直接continue，这样会走上面文件不在了的流程
+					plog.Println("这个文件是被移除的文件夹：", event)
+					removeWatch(watcher, event)
+					continue
+				case fsnotify.Rename:
+					plog.Println("这个文件是被重命名的文件夹：", event)
+					removeWatch(watcher, event)
+					continue
+				case fsnotify.Chmod:
+					plog.Println("这个文件是被修改权限的文件夹：", event)
+				default:
+					plog.Println("未知操作：", event)
+				}
+			} else {
+				plog.Println("这个文件是文件：", event)
+				innerNotify(event)
+			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
+				plog.Println("监听错误管道发现：不OK")
 				continue
 			}
-			plog.Println("Ignore err:", err)
+			plog.Println("监听错误管道发现:", err)
 
 		case <-stopCh: // 当接收到来自GracefulStop的信号时，结束循环
-			plog.Println("eventHandler结束循环")
+			plog.Println("决定优雅退出")
 			// 通知所有协程
 			tryCloseCh()
 			return
@@ -152,7 +227,8 @@ func eventHandler(watcher *fsnotify.Watcher) {
 func tryCloseCh() {
 	defer func() {
 		if r := recover(); r != nil {
-			plog.Println("recover:", r)
+			// plog.Println("recover:", r)
+			debug.PrintStack()
 		}
 	}()
 	close(stopCh)

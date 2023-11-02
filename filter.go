@@ -1,11 +1,9 @@
 package rxfsnotify
 
 import (
-	"github.com/atmshang/plog"
 	"github.com/reactivex/rxgo/v2"
 	"runtime/debug"
 	"sync"
-	"time"
 )
 
 var fileEventCh = make(chan rxgo.Item)
@@ -14,7 +12,7 @@ var fileEventCh = make(chan rxgo.Item)
 func sendFileEvent(info fileEvent) {
 	defer func() {
 		if r := recover(); r != nil {
-			plog.Println("recover:", r)
+			// plog.Println("recover:", r)
 		}
 	}()
 	fileEventCh <- rxgo.Item{V: info, E: nil}
@@ -23,7 +21,7 @@ func sendFileEvent(info fileEvent) {
 func tryCloseFileEventCh() {
 	defer func() {
 		if r := recover(); r != nil {
-			plog.Println("recover:", r)
+			// plog.Println("recover:", r)
 		}
 	}()
 	close(fileEventCh)
@@ -39,7 +37,7 @@ func fileFilter() {
 
 	fileEventCh = make(chan rxgo.Item)
 	observable := rxgo.FromChannel(fileEventCh).
-		BufferWithTimeOrCount(rxgo.WithDuration(time.Millisecond*250), 5).
+		//BufferWithTimeOrCount(rxgo.WithDuration(time.Millisecond*250), 5).
 		FlatMap(func(item rxgo.Item) rxgo.Observable {
 			return rxgo.Just(item.V)()
 		})
@@ -47,7 +45,7 @@ func fileFilter() {
 		info, ok := item.V.(fileEvent)
 		if ok {
 			filePath := info.Path
-			plog.Println("接收事件：", info)
+			// plog.Println("接收事件：", info)
 			go dealWithFileEvent(filePath)
 		}
 	}
@@ -75,18 +73,18 @@ func dealWithFileEvent(filePath string) {
 	lock := getFileLock(filePath)
 	ok := lock.TryLock()
 	if !ok {
-		plog.Println("跳过事件：", filePath)
+		// plog.Println("跳过事件：", filePath)
 		return
 	}
 	defer lock.Unlock()
-	plog.Println("处理事件：", filePath)
+	// plog.Println("处理事件：", filePath)
 
 	// 会被阻塞在检查中
 	valid := checkFileUntilValidOrIdle(filePath)
 	if !valid {
-		plog.Println("结果: File is not exist:", filePath)
+		// plog.Println("结果: File is not exist:", filePath)
 	} else {
-		plog.Println("结果: File is changed:", filePath)
+		// plog.Println("结果: File is changed:", filePath)
 	}
 
 	go callback(filePath, valid)
@@ -98,7 +96,7 @@ func callback(filePath string, exist bool) {
 		cbe := CallBackEvent{Path: filePath, Exist: exist}
 		defer func() {
 			if r := recover(); r != nil {
-				plog.Println("callback recover:", r)
+				// plog.Println("callback recover:", r)
 				debug.PrintStack()
 			}
 		}()
