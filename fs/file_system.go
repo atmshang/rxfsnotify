@@ -21,12 +21,12 @@ type FileSystem struct {
 	Root *Node
 }
 
-func NewNode(name string, absPath string, isFile bool) *Node {
+func newNode(name string, absPath string, isFile bool) *Node {
 	return &Node{Name: name, AbsPath: absPath, IsFile: isFile}
 }
 
-func (n *Node) AddChild(name string, absPath string, isFile bool) *Node {
-	newNode := NewNode(name, absPath, isFile)
+func (n *Node) addChild(name string, absPath string, isFile bool) *Node {
+	newNode := newNode(name, absPath, isFile)
 	n.Children = append(n.Children, newNode)
 	return newNode
 }
@@ -34,7 +34,7 @@ func (n *Node) AddChild(name string, absPath string, isFile bool) *Node {
 func NewFileSystem(rootAbsPath string) (*FileSystem, error) {
 
 	instance := FileSystem{
-		Root: NewNode(string(os.PathSeparator), rootAbsPath, false),
+		Root: newNode(string(os.PathSeparator), rootAbsPath, false),
 	}
 	err := instance.build(rootAbsPath)
 	if err != nil {
@@ -97,7 +97,7 @@ func (fs *FileSystem) Update(innerAbsPath string) error {
 			return err
 		}
 
-		fs.Add(relPath, isFile, size, modTime)
+		fs.add(relPath, isFile, size, modTime)
 
 		return nil
 	})
@@ -119,13 +119,13 @@ func (fs *FileSystem) build(rootPath string) error {
 			return err
 		}
 
-		fs.Add(relPath, isFile, size, modTime)
+		fs.add(relPath, isFile, size, modTime)
 
 		return nil
 	})
 }
 
-func (fs *FileSystem) Add(path string, isFile bool, size int64, modTime time.Time) {
+func (fs *FileSystem) add(path string, isFile bool, size int64, modTime time.Time) {
 	parts := strings.Split(path, string(os.PathSeparator))
 	currentNode := fs.Root
 
@@ -141,7 +141,7 @@ func (fs *FileSystem) Add(path string, isFile bool, size int64, modTime time.Tim
 
 		if !found {
 			absPath := filepath.Join(currentNode.AbsPath, part)
-			currentNode = currentNode.AddChild(part, absPath, isFile)
+			currentNode = currentNode.addChild(part, absPath, isFile)
 			currentNode.Size = size
 			currentNode.ModTime = modTime
 		}

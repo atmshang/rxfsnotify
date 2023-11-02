@@ -22,7 +22,7 @@ func main() {
 	plog.Println("SetPathCallbackListener")
 	rxfsnotify.SetPathCallbackListener(callback)
 
-	go rxfsnotify.Start([]string{"D:\\TempDir"})
+	go rxfsnotify.Start("D:\\TempDir")
 
 	select {}
 }

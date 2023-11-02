@@ -3,9 +3,9 @@ package rxfsnotify
 import (
 	"github.com/atmshang/plog"
 	"github.com/atmshang/rxfsnotify/concurrent"
+	"github.com/atmshang/rxfsnotify/fs"
 	"github.com/fsnotify/fsnotify"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -16,12 +16,12 @@ import (
 var stopCh = make(chan bool)
 var wg sync.WaitGroup
 
-func Start(dirPaths []string) {
+func Start(dirPath string) {
 	tryCloseCh()
 	refreshTaskQueue.Start()
 	stopCh = make(chan bool)
 	wg.Add(1)
-	run(dirPaths)
+	run(dirPath)
 	refreshTaskQueue.CancelAll()
 }
 
@@ -32,12 +32,19 @@ func GracefulStop() {
 
 var singleLocker sync.Mutex
 
+var snapshot fs.Snapshot
+
 // 这个方法只能单例运行
-func run(dirPaths []string) {
+func run(dirPath string) {
 	defer wg.Done()
 
 	singleLocker.Lock()
 	defer singleLocker.Unlock()
+
+	err := snapshot.Init(dirPath)
+	if err != nil {
+		plog.Panic(err)
+	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -45,7 +52,7 @@ func run(dirPaths []string) {
 	}
 	defer watcher.Close()
 
-	refreshWatchedPaths(watcher, dirPaths) //持续添加目录
+	refreshWatchedPaths(watcher, []string{dirPath})
 
 	go fileFilter() //启动过滤器
 
@@ -110,17 +117,17 @@ func addWatchedPaths(watcher *fsnotify.Watcher, dirPath string) {
 
 	err := watcher.Remove(dirPath)
 	if err != nil {
-		log.Println("[REMOVE4ADD] 移除观察失败：", err, dirPath)
+		//log.Println("[REMOVE4ADD] 移除观察失败：", err, dirPath)
 	} else {
-		log.Println("[REMOVE4ADD] 移除观察成功：", dirPath)
+		//log.Println("[REMOVE4ADD] 移除观察成功：", dirPath)
 	}
 
 	err = watcher.Add(dirPath) //添加观察目录
 	if err != nil {
-		log.Println("[ADD] 添加观察目录失败：", err, dirPath)
+		//log.Println("[ADD] 添加观察目录失败：", err, dirPath)
 		return
 	}
-	log.Println("[ADD] 添加观察目录成功：", dirPath)
+	//log.Println("[ADD] 添加观察目录成功：", dirPath)
 }
 
 // fsnotify的文档有说，会自动移除不存在的监听，先不管他，但是rename的情况有bug，难顶
@@ -130,10 +137,10 @@ func removeWatch(watcher *fsnotify.Watcher, event fsnotify.Event) {
 
 	err := watcher.Remove(event.Name)
 	if err != nil {
-		log.Println("[REMOVE] 移除观察失败：", err, event.Name)
+		//log.Println("[REMOVE] 移除观察失败：", err, event.Name)
 		return
 	}
-	log.Println("[REMOVE] 移除观察成功：", event.Name)
+	//log.Println("[REMOVE] 移除观察成功：", event.Name)
 }
 
 var waitingRefreshDirMap = concurrent.NewSafeMap()
@@ -143,7 +150,6 @@ var refreshTaskQueue = concurrent.NewTaskQueue()
 func innerNotify(event fsnotify.Event) {
 	_event := fileEvent{Path: event.Name, Event: event.Op.String()}
 	sendFileEvent(_event)
-
 }
 
 func innerProcessDir(watcher *fsnotify.Watcher, event fsnotify.Event) {
@@ -164,6 +170,26 @@ func innerProcessDir(watcher *fsnotify.Watcher, event fsnotify.Event) {
 
 }
 
+var optLocker sync.Mutex
+
+func singleLineOptSnapshot(dirPath string) {
+	optLocker.Lock()
+	defer optLocker.Unlock()
+	go func() {
+		err := snapshot.UpdateChangedDir(dirPath)
+		if err != nil {
+			return
+		}
+		refreshTaskQueue.CancelAll()
+		_ = refreshTaskQueue.AddTask(5000*time.Millisecond, func() {
+			diffs := snapshot.DiffAndSync()
+			for _, diff := range diffs {
+				callback(diff.AbsPath, diff.Op != 0)
+			}
+		})
+	}()
+}
+
 func eventHandler(watcher *fsnotify.Watcher) {
 	for {
 		select {
@@ -172,41 +198,19 @@ func eventHandler(watcher *fsnotify.Watcher) {
 				plog.Println("监听事件管道发现：不OK")
 				continue
 			}
+
+			singleLineOptSnapshot(event.Name)
+
 			// 判断状态
 			stat, err := os.Stat(event.Name)
 			if err != nil {
-				plog.Println("这个文件不在啦：", event)
+				//plog.Println("这个文件不在啦：", event)
 				removeWatch(watcher, event)
-				innerNotify(event)
-				continue
 			} else {
-				plog.Println("这个文件还在：", event)
-			}
-			if stat.IsDir() {
-				switch event.Op {
-				case fsnotify.Create:
-					plog.Println("这个文件是个新建的文件夹：", event)
-					innerProcessDir(watcher, event)
-					continue
-				case fsnotify.Write:
-					plog.Println("这个文件是个有内容变化的文件夹：", event)
-				case fsnotify.Remove:
-					// remove分为要remove和已经remove两次，要remove这回事，我们不管，这里直接continue，这样会走上面文件不在了的流程
-					plog.Println("这个文件是被移除的文件夹：", event)
-					removeWatch(watcher, event)
-					continue
-				case fsnotify.Rename:
-					plog.Println("这个文件是被重命名的文件夹：", event)
-					removeWatch(watcher, event)
-					continue
-				case fsnotify.Chmod:
-					plog.Println("这个文件是被修改权限的文件夹：", event)
-				default:
-					plog.Println("未知操作：", event)
+				//plog.Println("这个文件夹还在：", event)
+				if stat.IsDir() {
+					addWatchedPaths(watcher, event.Name)
 				}
-			} else {
-				plog.Println("这个文件是文件：", event)
-				innerNotify(event)
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {

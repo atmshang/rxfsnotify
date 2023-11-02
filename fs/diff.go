@@ -73,6 +73,11 @@ func diffNodes(oldNode *Node, newNode *Node, path string) []Diff {
 				Path:    path + "/" + name,
 				Op:      0,
 			})
+			// Add this line to check the children of the deleted node
+			for _, grandChild := range oldChild.Children {
+				childDiffs := diffNodes(grandChild, nil, path+"/"+name+"/"+grandChild.Name)
+				diffs = append(diffs, childDiffs...)
+			}
 		}
 	}
 
@@ -84,6 +89,11 @@ func diffNodes(oldNode *Node, newNode *Node, path string) []Diff {
 				Path:    path + "/" + name,
 				Op:      1,
 			})
+			// Add this line to check the children of the new node
+			for _, grandChild := range newChild.Children {
+				childDiffs := diffNodes(nil, grandChild, path+"/"+name+"/"+grandChild.Name)
+				diffs = append(diffs, childDiffs...)
+			}
 		}
 	}
 
